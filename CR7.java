@@ -1,4 +1,4 @@
-package cr7;
+package cgjj;
 
 import robocode.*;
 import robocode.util.Utils;
@@ -17,11 +17,14 @@ public class CR7 extends AdvancedRobot {
     private double escapeEnvelope = moveDirection * maxEscapeAngle(Rules.getBulletSpeed(3));
     private Point2D.Double myLocation;
     private Point2D.Double enemyLocation;
-    public static double enemyEnergy = 100.0;
+    public double enemyEnergy = 100.0;
+    public double lastDistance;
+    public double lastLateralVelocity;
     private double wallDistance;
     private double reverseWallDistance;
     private final double WALL_MARGIN = 36;
     public static double WALL_STICK = 160;
+    static final double A_LITTLE_LESS_THAN_HALF_PI = 1.25;
     private Rectangle2D battleField;
 
     //Variaveis para controle de tiro
@@ -33,8 +36,7 @@ public class CR7 extends AdvancedRobot {
     private static double[][][][][][][] normalGunSegmentation = new double[3][5][5][5][10][3][TOTAL_GUN_FACTORS];
     private static double[][][][][][][] fastGunSegmentation = new double[3][5][5][5][8][3][TOTAL_GUN_FACTORS];
 
-    GunWave head;
-    GunWave current;
+    public ArrayList<GunWave> gunWaves;
 
     //Variaveis para controle de movimentacao
     public static final int MIDDLE_MOVE_FACTOR = 23;
@@ -51,10 +53,13 @@ public class CR7 extends AdvancedRobot {
         setColors(Color.WHITE, new Color(187, 165, 61), new Color(187, 165, 61));
         setScanColor(new Color(187, 165, 61));
         battleField = new Rectangle2D.Double(18, 18, getBattleFieldWidth() - WALL_MARGIN, getBattleFieldHeight() - WALL_MARGIN);
-        enemyWaves = new ArrayList();
+        gunWaves = new ArrayList<>();
+        enemyWaves = new ArrayList<>();
         surfDirections = new ArrayList();
         surfAbsoluteBearings = new ArrayList();
-        setTurnRadarRight(Double.POSITIVE_INFINITY);
+        do {
+            turnRadarRightRadians(1);
+        } while (true);
     }
 
     public void onScannedRobot(ScannedRobotEvent e) {
@@ -77,12 +82,16 @@ public class CR7 extends AdvancedRobot {
             ew.distanceTraveled = Rules.getBulletSpeed(enemyBulletPower);
             ew.direction = (Integer) surfDirections.get(2);
             ew.directAngle = (Double) surfAbsoluteBearings.get(2);
-            ew.fireLocation = (Point2D.Double)enemyLocation.clone(); // last tick
+            ew.fireLocation = (Point2D.Double)enemyLocation.clone();
+            ew.currentSegment = moveSegmentation;
             enemyWaves.add(ew);
         }
 
+        lastDistance = e.getDistance();
+        lastLateralVelocity = lateralVelocity;
         enemyEnergy = e.getEnergy();
 
+        //Projeta as coordenadas do inimigo
         enemyLocation = projectCoordinates(myLocation, absoluteBearing, e.getDistance());
 
         updateWaves();
@@ -92,7 +101,9 @@ public class CR7 extends AdvancedRobot {
 
         finalBulletPower = 1.9;
         //Estrategia de aumentar o poder de fogo caso o inimigo esteja perto
-        if (e.getDistance() < 240) finalBulletPower = 3.0;
+        if (e.getDistance() < 240) {
+            finalBulletPower = 3.0;
+        }
         //Estrategia de calcular o poder de fogo pela energia do inimigo e propria energia
         finalBulletPower = Math.min(finalBulletPower, e.getEnergy()/4);
         finalBulletPower = Math.min(finalBulletPower, getEnergy()/2);
@@ -103,7 +114,6 @@ public class CR7 extends AdvancedRobot {
         absoluteBearing = e.getBearingRadians() + getHeadingRadians();
         myLocation = new Point2D.Double(getX(), getY());
         double enemyDistance = e.getDistance();
-        enemyLocation = projectCoordinates(myLocation, absoluteBearing, enemyDistance);
 
         //Encontra a velocidade lateral e direcao do inimigo para determinar o escape envelope
         enemyLateralVelocity = enemyVelocity * Math.sin(e.getHeadingRadians() - absoluteBearing);
@@ -175,33 +185,19 @@ public class CR7 extends AdvancedRobot {
             g.escapeEnvelope = escapeEnvelope;
             g.normalSegment = normalGunSegmentation[accelerationIndex][lateralVelocityIndex][moveTimeIndex][nearWallIndex][distanceIndex][reverseNearWallIndex];
             g.fastSegment = fastGunSegmentation[accelerationIndex][fastLateralVelocityIndex][fastMoveTimeIndex][fastNearWallIndex][fastDistanceIndex][fastReverseNearWallIndex];
-
+            gunWaves.add(g);
             //Se o cooldown da arma for 0 significa que esta apta a dar um tiro real que sera utilizado para ponderar os dados
             if (getGunHeat() == 0){
                 g.real = true;
             }
 
-            //Utiliza linked list para salvar as ondas de tiro
-            if (head == null)
-                head = current = g;
-            else
-                current = (current.next = g);
-
-            //Percorre a lista ligada iterando sobre as waves ate chegar em uma que ainda nao atingiu o oponente
-            //Ao fazer isso, remove as que ja nao sao mais uteis
-            while (head != null){
-                if(!head.update(getTime(), enemyLocation)){
-                    break;
-                }
-                head = head.next;
-            }
 
             //Percorre as ondas restantes atualizando a posicao dessas no tempo atual
-            if (head != null) {
-                GunWave waveIterator = head.next;
-                while (waveIterator != null) {
-                    waveIterator.update(getTime(), enemyLocation);
-                    waveIterator = waveIterator.next;
+            for (int i = 0; i < gunWaves.size(); i++) {
+                GunWave gw = gunWaves.get(i);
+                if(gw.update(getTime(), enemyLocation)){
+                    gunWaves.remove(gw);
+                    i--;
                 }
             }
 
@@ -231,7 +227,7 @@ public class CR7 extends AdvancedRobot {
                 setFire(finalBulletPower);
             }
 
-            setTurnRadarRightRadians(Math.tan(e.getBearingRadians() + getHeadingRadians() - getRadarHeadingRadians()) * 1.95);
+            setTurnRadarRightRadians(Math.tan(e.getBearingRadians() + getHeadingRadians() - getRadarHeadingRadians()) * 2);
         }
     }
 
@@ -241,9 +237,10 @@ public class CR7 extends AdvancedRobot {
                     e.getBullet().getX(), e.getBullet().getY());
             EnemyWave hitWave = null;
 
+            //Compara as ondas armazenadas no array com o tiro que atingiu o robo
+            //e seleciona a que melhor representa o tiro
             for (int x = 0; x < enemyWaves.size(); x++) {
-                EnemyWave ew = (EnemyWave) enemyWaves.get(x);
-
+                EnemyWave ew = enemyWaves.get(x);
                 if (Math.abs(ew.distanceTraveled -
                         myLocation.distance(ew.fireLocation)) < 50
                         && Math.abs(Rules.getBulletSpeed(e.getBullet().getPower())
@@ -254,24 +251,18 @@ public class CR7 extends AdvancedRobot {
             }
 
             if (hitWave != null) {
+                //Atualiza os dados de movimentacao e remove a onda
                 logHit(hitWave, hitBulletLocation);
-
                 enemyWaves.remove(enemyWaves.lastIndexOf(hitWave));
             }
         }
     }
 
-    public void onHitWall(HitWallEvent e) {
-        moveDirection *= -1;
-        setBack(100);
-    }
-
     public void onWin(WinEvent e) {
         System.out.println("EU SOU O MILIOR");
         turnGunRight(Double.POSITIVE_INFINITY);
+        turnRadarRight(Double.POSITIVE_INFINITY);
     }
-
-    //Metodos para controle de tiro
 
     //Metodos para controle de movimentacao
 
@@ -289,6 +280,9 @@ public class CR7 extends AdvancedRobot {
         }
     }
 
+    //Metodo doSurfing
+    //Identifica a onda mais proxima que pode ser surfada, calcula os perigos de desviar para a esquerda ou para a
+    //direita e escolhe a direcao mais segura para se mover, suavizando o movimento para evitar colisoes com as paredes
     public void doSurfing() {
         EnemyWave surfWave = getClosestSurfableWave();
         if (surfWave == null) {
@@ -300,9 +294,9 @@ public class CR7 extends AdvancedRobot {
 
         double goAngle = absoluteBearing(surfWave.fireLocation, myLocation);
         if (dangerLeft < dangerRight) {
-            goAngle = wallSmoothing(myLocation, goAngle - (Math.PI/2), -1);
+            goAngle = wallSmoothing(myLocation, goAngle - A_LITTLE_LESS_THAN_HALF_PI, -1);
         } else {
-            goAngle = wallSmoothing(myLocation, goAngle + (Math.PI/2), 1);
+            goAngle = wallSmoothing(myLocation, goAngle + A_LITTLE_LESS_THAN_HALF_PI, 1);
         }
 
         setBackAsFront(this, goAngle);
@@ -327,8 +321,10 @@ public class CR7 extends AdvancedRobot {
     //Metodo checkDanger
     //Checa o perigo que uma enemy wave representa caso o robo se mova para uma determinada direcao
     public double checkDanger(EnemyWave surfWave, int direction) {
-        int index = getMoveFactorIndex(surfWave, predictPosition(surfWave, direction));
-        return moveSegmentation[index];
+        Point2D.Double predictedPosition = predictPosition(surfWave, direction);
+        int index = getMoveFactorIndex(surfWave, predictedPosition);
+        double lastPredictedDistance = surfWave.fireLocation.distance(predictedPosition);
+        return (surfWave.currentSegment[index] + 0.01 / (Math.abs(index - MIDDLE_MOVE_FACTOR) + 1)) / Math.pow(lastPredictedDistance, 4);
     }
 
     //Metodo getMoveFactorIndex
@@ -340,6 +336,7 @@ public class CR7 extends AdvancedRobot {
     }
 
     //Metodo predictPosition
+    //Faz uma previsao da posicao do robo enquanto ele surfa a onda do inimigo, simulando o movimento ate interceptar a onda.
     public Point2D.Double predictPosition(EnemyWave surfWave, int direction) {
         Point2D.Double predictedPosition = (Point2D.Double)myLocation.clone();
         double predictedVelocity = getVelocity();
@@ -350,10 +347,8 @@ public class CR7 extends AdvancedRobot {
         boolean intercepted = false;
 
         do {
-            moveAngle =
-                    wallSmoothing(predictedPosition, absoluteBearing(surfWave.fireLocation,
-                            predictedPosition) + (direction * (Math.PI/2)), direction)
-                            - predictedHeading;
+            //Calcula o angulo para se mover, ajustando para evitar as paredes
+            moveAngle = wallSmoothing(predictedPosition, absoluteBearing(surfWave.fireLocation, predictedPosition) + (direction * A_LITTLE_LESS_THAN_HALF_PI), direction) - predictedHeading;
             moveDir = 1;
 
             if(Math.cos(moveAngle) < 0) {
@@ -363,23 +358,20 @@ public class CR7 extends AdvancedRobot {
 
             moveAngle = Utils.normalRelativeAngle(moveAngle);
 
+            // Calcula o giro maximo permitido com base na velocidade atual (Regra interna da fisica do Robocode)
             maxTurning = Math.PI/720d*(40d - 3d*Math.abs(predictedVelocity));
-            predictedHeading = Utils.normalRelativeAngle(predictedHeading
-                    + minMax(-maxTurning, maxTurning, moveAngle));
+            predictedHeading = Utils.normalRelativeAngle(predictedHeading + minMax(-maxTurning, maxTurning, moveAngle));
 
-            predictedVelocity +=
-                    (predictedVelocity * moveDir < 0 ? 2*moveDir : moveDir);
+            //Atualiza a velocidade prevista, ajustando para o sentido correto
+            predictedVelocity += (predictedVelocity * moveDir < 0 ? 2*moveDir : moveDir);
             predictedVelocity = minMax(-8, 8, predictedVelocity);
 
-
-            predictedPosition = projectCoordinates(predictedPosition, predictedHeading,
-                    predictedVelocity);
-
+            // Calcula a nova posicao prevista com base no angulo e velocidade atualizados
+            predictedPosition = projectCoordinates(predictedPosition, predictedHeading, predictedVelocity);
             counter++;
 
-            if (predictedPosition.distance(surfWave.fireLocation) <
-                    surfWave.distanceTraveled + (counter * surfWave.bulletVelocity)
-                            + surfWave.bulletVelocity) {
+            // Verifica se a posicao prevista intercepta a onda inimiga
+            if (predictedPosition.distance(surfWave.fireLocation) < surfWave.distanceTraveled + (counter * surfWave.bulletVelocity) + surfWave.bulletVelocity) {
                 intercepted = true;
             }
         } while(!intercepted && counter < 500);
@@ -387,14 +379,17 @@ public class CR7 extends AdvancedRobot {
         return predictedPosition;
     }
 
+    //Registra o impacto de um tiro no segmento correspondente e atualiza os valores com base na distancia ate o guess
+    //factor referido
     public void logHit(EnemyWave ew, Point2D.Double targetLocation) {
         int index = getMoveFactorIndex(ew, targetLocation);
 
         for (int x = 0; x < TOTAL_MOVE_FACTORS; x++) {
-            moveSegmentation[x] += 1.0 / (Math.pow(index - x, 2) + 1);
+            ew.currentSegment[x] += 1.0 / (Math.pow(index - x, 2) + 1);
         }
     }
 
+    //Calcula o angulo para se mover com base na localizacao atual do robo, ajustando para evitar as paredes
     public double wallSmoothing(Point2D.Double botLocation, double angle, int orientation) {
         while (!battleField.contains(projectCoordinates(botLocation, angle, WALL_STICK))) {
             angle += orientation*0.05;
@@ -402,9 +397,11 @@ public class CR7 extends AdvancedRobot {
         return angle;
     }
 
+    //Escolhe a direção de frente ou costas para mover o robo e
+    //minimizar o angulo de rotação necessario.
     public static void setBackAsFront(AdvancedRobot robot, double goAngle) {
-        double angle =
-                Utils.normalRelativeAngle(goAngle - robot.getHeadingRadians());
+        double angle = Utils.normalRelativeAngle(goAngle - robot.getHeadingRadians());
+        // Se o angulo for maior que 90 graus, eh mais eficiente ir de costas
         if (Math.abs(angle) > (Math.PI/2)) {
             if (angle < 0) {
                 robot.setTurnRightRadians(Math.PI + angle);
@@ -413,6 +410,7 @@ public class CR7 extends AdvancedRobot {
             }
             robot.setBack(100);
         } else {
+            //Caso o angulo seja menor que 90 graus, eh mais eficiente ir de frente
             if (angle < 0) {
                 robot.setTurnLeftRadians(-1*angle);
             } else {
@@ -484,6 +482,7 @@ public class CR7 extends AdvancedRobot {
         double directAngle;
         double distanceTraveled;
         int direction;
+        double[] currentSegment;
     }
 
     //Classe GunWave
@@ -541,4 +540,3 @@ public class CR7 extends AdvancedRobot {
         }
     }
 }
-
